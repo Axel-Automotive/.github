@@ -1,0 +1,396 @@
+# ============================================================================
+# release-governance.yml
+# Central reusable workflow — lives in: org/.github/.github/workflows/
+#
+# Caller repos invoke this with a thin wrapper. This workflow handles:
+#   - PR validation (conventional commit / label check, version preview)
+#   - Post-merge release (version bump, tag, GitHub Release, changelog)
+#
+# Trigger context: runs in the CALLER repo's context automatically.
+# ============================================================================
+
+name: Release Governance
+
+on:
+  workflow_call:
+    inputs:
+      release_branch:
+        description: "Branch that triggers releases"
+        required: false
+        type: string
+        default: "main"
+      versioning_strategy:
+        description: "How to determine bump type: 'labels' or 'conventional-commits'"
+        required: false
+        type: string
+        default: "labels"
+      changelog_file:
+        description: "Path to changelog file. Set to empty string to skip file commit."
+        required: false
+        type: string
+        default: "Documentation/CHANGELOG.md"
+      create_github_release:
+        description: "Whether to create a GitHub Release object"
+        required: false
+        type: boolean
+        default: true
+      dry_run:
+        description: "If true, calculate version and notes but do not tag or release"
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      release_token:
+        description: "PAT or GitHub App token with contents:write and pull_requests:write"
+        required: true
+
+# ============================================================================
+# PERMISSIONS
+# ============================================================================
+permissions:
+  contents: write
+  pull-requests: write
+
+# ============================================================================
+# JOBS
+# ============================================================================
+jobs:
+
+  # --------------------------------------------------------------------------
+  # JOB 1: PR Validation
+  # Runs on pull_request events targeting the release branch.
+  # Posts a preview comment with the proposed version and release notes.
+  # --------------------------------------------------------------------------
+  pr-validation:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout caller repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.release_token }}
+
+      - name: Get latest tag
+        id: latest_tag
+        run: |
+          TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Current latest tag: $TAG"
+
+      - name: Determine bump type from labels
+        if: inputs.versioning_strategy == 'labels'
+        id: bump_labels
+        env:
+          GH_TOKEN: ${{ secrets.release_token }}
+        run: |
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          LABELS=$(gh pr view "$PR_NUMBER" --json labels --jq '.labels[].name' 2>/dev/null || echo "")
+
+          BUMP="patch"
+          if echo "$LABELS" | grep -qi "breaking\|major"; then
+            BUMP="major"
+          elif echo "$LABELS" | grep -qi "feature\|minor\|enhancement"; then
+            BUMP="minor"
+          fi
+
+          echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
+          echo "Determined bump type from labels: $BUMP"
+
+      - name: Determine bump type from conventional commits
+        if: inputs.versioning_strategy == 'conventional-commits'
+        id: bump_cc
+        run: |
+          COMMITS=$(git log ${{ steps.latest_tag.outputs.tag }}..HEAD --oneline 2>/dev/null || git log --oneline)
+
+          BUMP="patch"
+          if echo "$COMMITS" | grep -qiE "^[a-f0-9]+ [a-z]+(\(.+\))?!:"; then
+            BUMP="major"
+          elif echo "$COMMITS" | grep -qiE "^[a-f0-9]+ feat(\(.+\))?:"; then
+            BUMP="minor"
+          fi
+
+          echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
+          echo "Determined bump type from commits: $BUMP"
+
+      - name: Calculate next version
+        id: next_version
+        run: |
+          CURRENT="${{ steps.latest_tag.outputs.tag }}"
+          CURRENT="${CURRENT#v}"
+
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          MAJOR=${MAJOR:-0}
+          MINOR=${MINOR:-0}
+          PATCH=${PATCH:-0}
+
+          BUMP="${{ steps.bump_labels.outputs.bump }}${{ steps.bump_cc.outputs.bump }}"
+
+          if [[ "$BUMP" == *"major"* ]]; then
+            MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0
+          elif [[ "$BUMP" == *"minor"* ]]; then
+            MINOR=$((MINOR + 1)); PATCH=0
+          else
+            PATCH=$((PATCH + 1))
+          fi
+
+          NEXT="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "version=$NEXT" >> "$GITHUB_OUTPUT"
+          echo "Next version will be: $NEXT"
+
+      - name: Generate release notes preview
+        id: release_notes
+        run: |
+          TAG="${{ steps.latest_tag.outputs.tag }}"
+          NEXT="${{ steps.next_version.outputs.version }}"
+
+          {
+            echo "notes<<RELEASE_NOTES_EOF"
+            echo "## $NEXT (Preview)"
+            echo ""
+            echo "### Changes since $TAG"
+            echo ""
+            git log ${TAG}..HEAD --pretty=format:"- %s (%h)" 2>/dev/null || git log --pretty=format:"- %s (%h)" -20
+            echo ""
+            echo "RELEASE_NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Post or update PR comment
+        env:
+          GH_TOKEN: ${{ secrets.release_token }}
+        run: |
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          MARKER="<!-- release-governance-preview -->"
+          BODY="${MARKER}
+          ### Release Preview
+
+          **Proposed version:** \`${{ steps.next_version.outputs.version }}\`
+          **Bump type:** \`${{ steps.bump_labels.outputs.bump }}${{ steps.bump_cc.outputs.bump }}\`
+          **Strategy:** \`${{ inputs.versioning_strategy }}\`
+
+          ${{ steps.release_notes.outputs.notes }}
+
+          ---
+          _This comment is managed by the org release governance workflow._"
+
+          EXISTING=$(gh pr view "$PR_NUMBER" --json comments \
+            --jq ".comments[] | select(.body | contains(\"$MARKER\")) | .id" \
+            | head -1)
+
+          if [ -n "$EXISTING" ]; then
+            gh api graphql -f query="
+              mutation {
+                updateIssueComment(input: {id: \"$EXISTING\", body: $(echo "$BODY" | jq -Rs .)}) {
+                  issueComment { id }
+                }
+              }"
+          else
+            gh pr comment "$PR_NUMBER" --body "$BODY"
+          fi
+
+  # --------------------------------------------------------------------------
+  # JOB 2: Release
+  # Runs on push to the release branch (post-merge).
+  # Tags, generates changelog, creates GitHub Release.
+  # --------------------------------------------------------------------------
+  release:
+    if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', inputs.release_branch)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout caller repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.release_token }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name "release-governance[bot]"
+          git config user.email "release-governance[bot]@users.noreply.github.com"
+
+      - name: Get latest tag
+        id: latest_tag
+        run: |
+          TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Determine bump type from labels (last merged PR)
+        if: inputs.versioning_strategy == 'labels'
+        id: bump_labels
+        env:
+          GH_TOKEN: ${{ secrets.release_token }}
+        run: |
+          PR_NUMBER=$(gh pr list --state merged --base "${{ inputs.release_branch }}" \
+            --json number,mergedAt --jq 'sort_by(.mergedAt) | last | .number' 2>/dev/null || echo "")
+
+          BUMP="patch"
+          if [ -n "$PR_NUMBER" ]; then
+            LABELS=$(gh pr view "$PR_NUMBER" --json labels --jq '.labels[].name' 2>/dev/null || echo "")
+            if echo "$LABELS" | grep -qi "breaking\|major"; then
+              BUMP="major"
+            elif echo "$LABELS" | grep -qi "feature\|minor\|enhancement"; then
+              BUMP="minor"
+            fi
+          fi
+
+          echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
+
+      - name: Determine bump type from conventional commits
+        if: inputs.versioning_strategy == 'conventional-commits'
+        id: bump_cc
+        run: |
+          COMMITS=$(git log ${{ steps.latest_tag.outputs.tag }}..HEAD --oneline 2>/dev/null || git log --oneline)
+
+          BUMP="patch"
+          if echo "$COMMITS" | grep -qiE "^[a-f0-9]+ [a-z]+(\(.+\))?!:"; then
+            BUMP="major"
+          elif echo "$COMMITS" | grep -qiE "^[a-f0-9]+ feat(\(.+\))?:"; then
+            BUMP="minor"
+          fi
+
+          echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
+
+      - name: Calculate next version
+        id: next_version
+        run: |
+          CURRENT="${{ steps.latest_tag.outputs.tag }}"
+          CURRENT="${CURRENT#v}"
+
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          MAJOR=${MAJOR:-0}
+          MINOR=${MINOR:-0}
+          PATCH=${PATCH:-0}
+
+          BUMP="${{ steps.bump_labels.outputs.bump }}${{ steps.bump_cc.outputs.bump }}"
+
+          if [[ "$BUMP" == *"major"* ]]; then
+            MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0
+          elif [[ "$BUMP" == *"minor"* ]]; then
+            MINOR=$((MINOR + 1)); PATCH=0
+          else
+            PATCH=$((PATCH + 1))
+          fi
+
+          NEXT="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "version=$NEXT" >> "$GITHUB_OUTPUT"
+          echo "Releasing: $NEXT"
+
+      - name: Check for no-op release
+        id: check_noop
+        run: |
+          TAG="${{ steps.latest_tag.outputs.tag }}"
+          COMMIT_COUNT=$(git rev-list ${TAG}..HEAD --count 2>/dev/null || echo "999")
+
+          if [ "$COMMIT_COUNT" -eq 0 ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "No new commits since $TAG. Skipping release."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate release notes
+        if: steps.check_noop.outputs.skip != 'true'
+        id: release_notes
+        run: |
+          TAG="${{ steps.latest_tag.outputs.tag }}"
+          NEXT="${{ steps.next_version.outputs.version }}"
+          DATE=$(date +%Y-%m-%d)
+
+          NOTES_FILE=$(mktemp)
+
+          echo "## $NEXT ($DATE)" > "$NOTES_FILE"
+          echo "" >> "$NOTES_FILE"
+
+          # Group by conventional commit type if possible
+          for TYPE in feat fix docs style refactor perf test build ci chore; do
+            ENTRIES=$(git log ${TAG}..HEAD --pretty=format:"- %s (%h)" --grep="^${TYPE}" 2>/dev/null || true)
+            if [ -n "$ENTRIES" ]; then
+              TYPE_UPPER=$(echo "$TYPE" | sed 's/.*/\u&/')
+              echo "### ${TYPE_UPPER}" >> "$NOTES_FILE"
+              echo "$ENTRIES" >> "$NOTES_FILE"
+              echo "" >> "$NOTES_FILE"
+            fi
+          done
+
+          # Catch anything not matching conventional commit patterns
+          UNGROUPED=$(git log ${TAG}..HEAD --pretty=format:"- %s (%h)" \
+            --invert-grep --grep="^feat\|^fix\|^docs\|^style\|^refactor\|^perf\|^test\|^build\|^ci\|^chore" 2>/dev/null || true)
+          if [ -n "$UNGROUPED" ]; then
+            echo "### Other" >> "$NOTES_FILE"
+            echo "$UNGROUPED" >> "$NOTES_FILE"
+            echo "" >> "$NOTES_FILE"
+          fi
+
+          echo "notes_file=$NOTES_FILE" >> "$GITHUB_OUTPUT"
+
+          # Also store inline for GitHub Release body
+          {
+            echo "notes<<RELEASE_NOTES_EOF"
+            cat "$NOTES_FILE"
+            echo "RELEASE_NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Update changelog file
+        if: steps.check_noop.outputs.skip != 'true' && inputs.changelog_file != '' && inputs.dry_run == false
+        run: |
+          CHANGELOG="${{ inputs.changelog_file }}"
+          NOTES_FILE="${{ steps.release_notes.outputs.notes_file }}"
+
+          # Ensure parent directory exists
+          mkdir -p "$(dirname "$CHANGELOG")"
+
+          if [ -f "$CHANGELOG" ]; then
+            # Prepend new notes after the first heading line
+            TEMP=$(mktemp)
+            if head -1 "$CHANGELOG" | grep -q "^# "; then
+              head -1 "$CHANGELOG" > "$TEMP"
+              echo "" >> "$TEMP"
+              cat "$NOTES_FILE" >> "$TEMP"
+              echo "" >> "$TEMP"
+              tail -n +2 "$CHANGELOG" >> "$TEMP"
+            else
+              cat "$NOTES_FILE" > "$TEMP"
+              echo "" >> "$TEMP"
+              cat "$CHANGELOG" >> "$TEMP"
+            fi
+            mv "$TEMP" "$CHANGELOG"
+          else
+            echo "# Changelog" > "$CHANGELOG"
+            echo "" >> "$CHANGELOG"
+            cat "$NOTES_FILE" >> "$CHANGELOG"
+          fi
+
+          git add "$CHANGELOG"
+          git commit -m "chore(release): update changelog for ${{ steps.next_version.outputs.version }} [skip ci]"
+          git push
+
+      - name: Create tag
+        if: steps.check_noop.outputs.skip != 'true' && inputs.dry_run == false
+        run: |
+          VERSION="${{ steps.next_version.outputs.version }}"
+          git tag -a "$VERSION" -m "Release $VERSION"
+          git push origin "$VERSION"
+
+      - name: Create GitHub Release
+        if: steps.check_noop.outputs.skip != 'true' && inputs.create_github_release == true && inputs.dry_run == false
+        env:
+          GH_TOKEN: ${{ secrets.release_token }}
+        run: |
+          VERSION="${{ steps.next_version.outputs.version }}"
+          gh release create "$VERSION" \
+            --title "$VERSION" \
+            --notes "${{ steps.release_notes.outputs.notes }}" \
+            --verify-tag
+
+      - name: Dry run summary
+        if: inputs.dry_run == true
+        run: |
+          echo "============================================"
+          echo "DRY RUN SUMMARY"
+          echo "============================================"
+          echo "Would release: ${{ steps.next_version.outputs.version }}"
+          echo "Bump type: ${{ steps.bump_labels.outputs.bump }}${{ steps.bump_cc.outputs.bump }}"
+          echo ""
+          echo "Release notes:"
+          cat "${{ steps.release_notes.outputs.notes_file }}"
+          echo "============================================"
