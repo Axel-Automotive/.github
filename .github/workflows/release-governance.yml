@@ -360,6 +360,7 @@ jobs:
 
           git add "$CHANGELOG"
           git commit -m "chore(release): update changelog for ${{ steps.next_version.outputs.version }} [skip ci]"
+          git pull --rebase origin ${{ inputs.release_branch }}
           git push
 
       - name: Generate Documentation/OVERVIEW.md
@@ -455,11 +456,13 @@ jobs:
 
           git add Documentation/OVERVIEW.md
           git commit -m "docs(release): update OVERVIEW.md for ${VERSION} [skip ci]"
+          git pull --rebase origin ${{ inputs.release_branch }}
           git push
 
       - name: Create tag
         if: steps.check_noop.outputs.skip != 'true' && inputs.dry_run == false
         run: |
+          git pull --rebase origin ${{ inputs.release_branch }}
           VERSION="${{ steps.next_version.outputs.version }}"
           git tag -a "$VERSION" -m "Release $VERSION"
           git push origin "$VERSION"
