@@ -39,13 +39,8 @@ on:
         required: false
         type: boolean
         default: false
-    secrets:
-      release_token:
-        description: "PAT or GitHub App token with contents:write and pull_requests:write"
-        required: true
-      anthropic_api_key:
-        description: "Anthropic API key for generating Documentation/OVERVIEW.md"
-        required: true
+    # Secrets are inherited from the caller workflow.
+    # Required org secrets: ORG_RELEASE_TOKEN, ANTHROPIC_API_KEY
 
 # ============================================================================
 # PERMISSIONS
@@ -69,10 +64,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout caller repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          token: ${{ secrets.release_token }}
+          token: ${{ secrets.ORG_RELEASE_TOKEN }}
 
       - name: Get latest tag
         id: latest_tag
@@ -85,7 +80,7 @@ jobs:
         if: inputs.versioning_strategy == 'labels'
         id: bump_labels
         env:
-          GH_TOKEN: ${{ secrets.release_token }}
+          GH_TOKEN: ${{ secrets.ORG_RELEASE_TOKEN }}
         run: |
           PR_NUMBER=${{ github.event.pull_request.number }}
           LABELS=$(gh pr view "$PR_NUMBER" --json labels --jq '.labels[].name' 2>/dev/null || echo "")
@@ -160,7 +155,7 @@ jobs:
 
       - name: Post or update PR comment
         env:
-          GH_TOKEN: ${{ secrets.release_token }}
+          GH_TOKEN: ${{ secrets.ORG_RELEASE_TOKEN }}
         run: |
           PR_NUMBER=${{ github.event.pull_request.number }}
           MARKER="<!-- release-governance-preview -->"
@@ -201,10 +196,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout caller repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          token: ${{ secrets.release_token }}
+          token: ${{ secrets.ORG_RELEASE_TOKEN }}
 
       - name: Configure git identity
         run: |
@@ -221,7 +216,7 @@ jobs:
         if: inputs.versioning_strategy == 'labels'
         id: bump_labels
         env:
-          GH_TOKEN: ${{ secrets.release_token }}
+          GH_TOKEN: ${{ secrets.ORG_RELEASE_TOKEN }}
         run: |
           PR_NUMBER=$(gh pr list --state merged --base "${{ inputs.release_branch }}" \
             --json number,mergedAt --jq 'sort_by(.mergedAt) | last | .number' 2>/dev/null || echo "")
@@ -370,7 +365,7 @@ jobs:
       - name: Generate Documentation/OVERVIEW.md
         if: steps.check_noop.outputs.skip != 'true' && inputs.dry_run == false
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.anthropic_api_key }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           mkdir -p Documentation
           VERSION="${{ steps.next_version.outputs.version }}"
@@ -472,7 +467,7 @@ jobs:
       - name: Create GitHub Release
         if: steps.check_noop.outputs.skip != 'true' && inputs.create_github_release == true && inputs.dry_run == false
         env:
-          GH_TOKEN: ${{ secrets.release_token }}
+          GH_TOKEN: ${{ secrets.ORG_RELEASE_TOKEN }}
         run: |
           VERSION="${{ steps.next_version.outputs.version }}"
           gh release create "$VERSION" \
