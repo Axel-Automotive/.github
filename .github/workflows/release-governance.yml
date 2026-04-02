@@ -43,6 +43,9 @@ on:
       release_token:
         description: "PAT or GitHub App token with contents:write and pull_requests:write"
         required: true
+      anthropic_api_key:
+        description: "Anthropic API key for generating Documentation/OVERVIEW.md"
+        required: true
 
 # ============================================================================
 # PERMISSIONS
@@ -362,6 +365,137 @@ jobs:
 
           git add "$CHANGELOG"
           git commit -m "chore(release): update changelog for ${{ steps.next_version.outputs.version }} [skip ci]"
+          git push
+
+      - name: Generate Documentation/OVERVIEW.md
+        if: steps.check_noop.outputs.skip != 'true' && inputs.dry_run == false
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.anthropic_api_key }}
+        run: |
+          mkdir -p Documentation
+          VERSION="${{ steps.next_version.outputs.version }}"
+          TAG="${{ steps.latest_tag.outputs.tag }}"
+
+          # Gather repo structure (max depth 4, ignore hidden dirs and node_modules)
+          TREE=$(find . -maxdepth 4 \
+            -not -path './.git/*' \
+            -not -path './node_modules/*' \
+            -not -path './.github/*' \
+            -not -path './vendor/*' \
+            -not -path './.next/*' \
+            -not -path './dist/*' \
+            -not -path './build/*' \
+            | head -200 | sort)
+
+          # Read key config/entry files if they exist
+          KEY_FILES=""
+          for F in README.md README.rst readme.md package.json Cargo.toml pyproject.toml setup.py go.mod composer.json Gemfile pom.xml build.gradle Makefile docker-compose.yml Dockerfile; do
+            if [ -f "$F" ]; then
+              CONTENT=$(head -100 "$F")
+              KEY_FILES="${KEY_FILES}
+
+--- FILE: ${F} ---
+${CONTENT}
+--- END ${F} ---"
+            fi
+          done
+
+          # Get the diff summary since last tag
+          DIFF_SUMMARY=$(git diff "${TAG}..HEAD" --stat 2>/dev/null | tail -50 || echo "No previous tag found.")
+          DIFF_CONTENT=$(git diff "${TAG}..HEAD" --no-color 2>/dev/null | head -500 || echo "")
+
+          # Read existing OVERVIEW.md if present
+          EXISTING_OVERVIEW=""
+          if [ -f "Documentation/OVERVIEW.md" ]; then
+            EXISTING_OVERVIEW=$(cat Documentation/OVERVIEW.md)
+          fi
+
+          # Build the prompt
+          PROMPT_FILE=$(mktemp)
+          cat > "$PROMPT_FILE" << 'PROMPT_BOUNDARY'
+          You are a technical writer. Your job is to produce or update a Documentation/OVERVIEW.md file that explains how this software works.
+
+          The document should be written in Markdown and cover:
+          - What the software does (purpose and scope)
+          - Architecture and project structure
+          - Key modules, files, or packages and their responsibilities
+          - How the pieces connect (data flow, request handling, build pipeline, etc.)
+          - Any external dependencies or services
+          - How to run or build the project if discernible from config files
+
+          Rules:
+          - Write for a developer joining the team who needs to understand the codebase quickly.
+          - Be specific. Reference actual file and directory names from the repo.
+          - If an existing OVERVIEW.md is provided, update it with information from the latest changes rather than rewriting from scratch. Preserve accurate existing content and revise sections affected by the diff.
+          - If no existing OVERVIEW.md is provided, write a complete overview from the repo structure and config files.
+          - Do not invent features or files that are not evidenced in the provided context.
+          - Output ONLY the Markdown content. No preamble, no wrapping code fences.
+          PROMPT_BOUNDARY
+
+          # Build JSON payload
+          USER_CONTENT="REPOSITORY: ${GITHUB_REPOSITORY}
+          VERSION: ${VERSION}
+
+          DIRECTORY STRUCTURE:
+          ${TREE}
+
+          KEY FILES:
+          ${KEY_FILES}
+
+          CHANGES SINCE LAST RELEASE (${TAG}):
+          ${DIFF_SUMMARY}
+
+          DIFF EXCERPT:
+          ${DIFF_CONTENT}
+
+          EXISTING OVERVIEW.md:
+          ${EXISTING_OVERVIEW:-"(none — generate from scratch)"}"
+
+          # Escape for JSON
+          SYSTEM_PROMPT=$(cat "$PROMPT_FILE" | jq -Rs .)
+          USER_MSG=$(echo "$USER_CONTENT" | jq -Rs .)
+
+          PAYLOAD=$(cat <<JSON_EOF
+          {
+            "model": "claude-sonnet-4-20250514",
+            "max_tokens": 4096,
+            "messages": [
+              {"role": "user", "content": ${USER_MSG}}
+            ],
+            "system": ${SYSTEM_PROMPT}
+          }
+          JSON_EOF
+          )
+
+          # Call Claude API
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            https://api.anthropic.com/v1/messages \
+            -H "Content-Type: application/json" \
+            -H "x-api-key: ${ANTHROPIC_API_KEY}" \
+            -H "anthropic-version: 2023-06-01" \
+            -d "$PAYLOAD")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "WARNING: Claude API returned HTTP ${HTTP_CODE}. Skipping OVERVIEW.md generation."
+            echo "Response: ${BODY}"
+            exit 0
+          fi
+
+          # Extract text content from response
+          OVERVIEW_CONTENT=$(echo "$BODY" | jq -r '.content[0].text // empty')
+
+          if [ -z "$OVERVIEW_CONTENT" ]; then
+            echo "WARNING: Empty response from Claude API. Skipping OVERVIEW.md generation."
+            exit 0
+          fi
+
+          echo "$OVERVIEW_CONTENT" > Documentation/OVERVIEW.md
+
+          git add Documentation/OVERVIEW.md
+          git commit -m "docs(release): update OVERVIEW.md for ${VERSION} [skip ci]"
           git push
 
       - name: Create tag
