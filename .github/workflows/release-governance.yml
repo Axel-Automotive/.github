@@ -67,7 +67,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          token: ${{ secrets.ORG_RELEASE_TOKEN }}
+          token: ${{ github.token }}
 
       - name: Get latest tag
         id: latest_tag
@@ -80,7 +80,7 @@ jobs:
         if: inputs.versioning_strategy == 'labels'
         id: bump_labels
         env:
-          GH_TOKEN: ${{ secrets.ORG_RELEASE_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           PR_NUMBER=${{ github.event.pull_request.number }}
           LABELS=$(gh pr view "$PR_NUMBER" --json labels --jq '.labels[].name' 2>/dev/null || echo "")
@@ -155,7 +155,7 @@ jobs:
 
       - name: Post or update PR comment
         env:
-          GH_TOKEN: ${{ secrets.ORG_RELEASE_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           PR_NUMBER=${{ github.event.pull_request.number }}
           MARKER="<!-- release-governance-preview -->"
@@ -199,7 +199,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          token: ${{ secrets.ORG_RELEASE_TOKEN }}
+          token: ${{ github.token }}
 
       - name: Configure git identity
         run: |
@@ -216,7 +216,7 @@ jobs:
         if: inputs.versioning_strategy == 'labels'
         id: bump_labels
         env:
-          GH_TOKEN: ${{ secrets.ORG_RELEASE_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           PR_NUMBER=$(gh pr list --state merged --base "${{ inputs.release_branch }}" \
             --json number,mergedAt --jq 'sort_by(.mergedAt) | last | .number' 2>/dev/null || echo "")
@@ -467,7 +467,7 @@ jobs:
       - name: Create GitHub Release
         if: steps.check_noop.outputs.skip != 'true' && inputs.create_github_release == true && inputs.dry_run == false
         env:
-          GH_TOKEN: ${{ secrets.ORG_RELEASE_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${{ steps.next_version.outputs.version }}"
           gh release create "$VERSION" \
