@@ -1,0 +1,35 @@
+# ============================================================================
+# org-release.yml
+# Thin caller workflow — lives in each repo at .github/workflows/org-release.yml
+#
+# This file does nothing except call the org's central reusable workflow.
+# All logic lives in the org .github repo. Do not add steps here.
+#
+# Replace Axel-Automotive with your actual GitHub organization name.
+# ============================================================================
+
+name: Org Release Governance
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  # Uncomment if you use merge queue:
+  # merge_group:
+  #   branches:
+  #     - main
+
+jobs:
+  release-governance:
+    uses: Axel-Automotive/.github/.github/workflows/release-governance.yml@main
+    with:
+      release_branch: "main"
+      versioning_strategy: "labels"       # or "conventional-commits"
+      changelog_file: "Documentation/CHANGELOG.md"      # always at repo root /Documentation
+      create_github_release: true
+      dry_run: false
+    secrets:
+      release_token: ${{ secrets.ORG_RELEASE_TOKEN }}

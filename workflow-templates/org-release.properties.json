@@ -1,0 +1,6 @@
+{
+  "name": "Org Release Governance",
+  "description": "Centralized release workflow for all Axel-Automotive repos.",
+  "iconName": "rocket",
+  "categories": ["Automation"]
+}
