@@ -39,6 +39,8 @@ The workflow reads the latest git tag, determines the version bump type from PR 
 
 **On push to main (after merge or direct push):**
 
+The release pipeline triggers on every push to main regardless of how the push occurred. Whether a PR was merged or a developer pushed directly, the full release process runs.
+
 The workflow reads the latest git tag, determines the bump type, calculates the next version, generates release notes grouped by commit type, creates or updates `Documentation/CHANGELOG.md`, sends the repo's structure and recent changes to the Claude API to generate or update `Documentation/OVERVIEW.md`, creates an annotated git tag, and publishes a GitHub Release. All commits made by the workflow include `[skip ci]` to prevent infinite loops.
 
 #### Versioning
@@ -131,7 +133,7 @@ Organization rulesets are defined but not enforced. Developers can push directly
 
 ### Workflow Constraints
 
-The caller workflow must exist in each repo because GitHub requires a workflow file to physically exist inside a repository for it to trigger on that repo's events. Version calculation is tag-based; manually creating or deleting tags outside the workflow can break the version sequence. The AI documentation is generated from directory structure, config files, and a capped diff excerpt (500 lines), so very large releases may not be fully reflected. The changelog quality depends on commit message quality. Direct pushes to main skip PR validation and default to a patch bump.
+The caller workflow must exist in each repo because GitHub requires a workflow file to physically exist inside a repository for it to trigger on that repo's events. Version calculation is tag-based; manually creating or deleting tags outside the workflow can break the version sequence. The AI documentation is generated from directory structure, config files, and a capped diff excerpt (500 lines), so very large releases may not be fully reflected. The changelog quality depends on commit message quality. Direct pushes to main still trigger the full release pipeline (tag, changelog, OVERVIEW.md, GitHub Release), but they skip the PR validation step (version preview comment) and the bump type defaults to patch since there are no PR labels to read.
 
 ### Operational Constraints
 
