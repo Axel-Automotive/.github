@@ -468,8 +468,12 @@ jobs:
         run: |
           git pull --rebase origin ${{ inputs.release_branch }}
           VERSION="${{ steps.next_version.outputs.version }}"
-          git tag -a "$VERSION" -m "Release $VERSION"
-          git push origin "$VERSION"
+          if git rev-parse "$VERSION" >/dev/null 2>&1; then
+            echo "Tag $VERSION already exists — skipping."
+          else
+            git tag -a "$VERSION" -m "Release $VERSION"
+            git push origin "$VERSION"
+          fi
 
       - name: Create GitHub Release
         if: steps.check_noop.outputs.skip != 'true' && inputs.create_github_release == true && inputs.dry_run == false
@@ -477,10 +481,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${{ steps.next_version.outputs.version }}"
-          gh release create "$VERSION" \
-            --title "$VERSION" \
-            --notes "${{ steps.release_notes.outputs.notes }}" \
-            --verify-tag
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "Release $VERSION already exists — skipping."
+          else
+            gh release create "$VERSION" \
+              --title "$VERSION" \
+              --notes "${{ steps.release_notes.outputs.notes }}" \
+              --verify-tag
+          fi
 
       - name: Dry run summary
         if: inputs.dry_run == true
