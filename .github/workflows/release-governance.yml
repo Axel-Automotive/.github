@@ -455,9 +455,13 @@ jobs:
           echo "$OVERVIEW_CONTENT" > Documentation/OVERVIEW.md
 
           git add Documentation/OVERVIEW.md
-          git commit -m "docs(release): update OVERVIEW.md for ${VERSION} [skip ci]"
-          git pull --rebase origin ${{ inputs.release_branch }}
-          git push
+          if git diff --cached --quiet; then
+            echo "OVERVIEW.md unchanged — skipping commit."
+          else
+            git commit -m "docs(release): update OVERVIEW.md for ${VERSION} [skip ci]"
+            git pull --rebase origin ${{ inputs.release_branch }}
+            git push
+          fi
 
       - name: Create tag
         if: steps.check_noop.outputs.skip != 'true' && inputs.dry_run == false
