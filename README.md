@@ -27,7 +27,7 @@ As the organization's automation needs expand, this repository will grow to incl
 
 ### Automated Release Pipeline
 
-Every repository enrolled in the release pipeline gets automatic versioning, changelog generation, AI-generated technical documentation, and GitHub Release publishing on every push to `main`. No manual tagging, versioning, or documentation updates are required from developers.
+Every repository enrolled in the release pipeline gets automatic versioning, AI-generated technical documentation, and GitHub Release publishing with auto-generated release notes on every push to `main`. No manual tagging, versioning, or documentation updates are required from developers. GitHub's native auto-generated release notes replace custom changelog scripts — configure categories via `.github/release.yml` in each repo.
 
 #### How It Works
 
@@ -41,7 +41,7 @@ The workflow reads the latest git tag, determines the version bump type from PR 
 
 The release pipeline triggers on every push to main regardless of how the push occurred. Whether a PR was merged or a developer pushed directly, the full release process runs.
 
-The workflow reads the latest git tag, determines the bump type, calculates the next version, generates release notes grouped by commit type, creates or updates `Documentation/CHANGELOG.md`, sends the repo's structure and recent changes to the Claude API to generate or update `Documentation/OVERVIEW.md`, creates an annotated git tag, and publishes a GitHub Release. All commits made by the workflow include `[skip ci]` to prevent infinite loops.
+The workflow reads the latest git tag, determines the bump type, calculates the next version, sends the repo's structure and recent changes to the Claude API to generate or update `Documentation/OVERVIEW.md`, creates an annotated git tag, and publishes a GitHub Release with auto-generated release notes. All commits made by the workflow include `[skip ci]` to prevent infinite loops. Bot commits (those containing `[skip ci]` or `chore(release):`) are automatically skipped to prevent version drift.
 
 #### Versioning
 
@@ -66,9 +66,8 @@ If the API call fails for any reason, the workflow logs a warning and continues.
 After every merge to main, each enrolled repo ends up with:
 
 A new semantic version tag (e.g., `v1.2.3`).
-An updated `Documentation/CHANGELOG.md` with grouped release notes prepended.
 An updated `Documentation/OVERVIEW.md` with a current technical overview of the codebase.
-A GitHub Release with the version number and release notes.
+A GitHub Release with the version number and auto-generated release notes (categorized by PR labels).
 
 
 ## Enrolled Repositories
